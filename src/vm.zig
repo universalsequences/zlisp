@@ -10,23 +10,13 @@ const RuntimeObject = lisp.RuntimeObject;
 ////
 ////
 
-pub const VMError = error{
-    StackUnderflow,
-    InvalidResult,
-    DivisionByZero,
-    VariableNotFound,
-    NotAFunction,
-    ArgumentCountMismatch,
-    NotANumber,
-    NotACons,
-    NotAnObject,
-    InvalidKey,
-};
+pub const VMError = error{ StackUnderflow, InvalidResult, DivisionByZero, VariableNotFound, NotAFunction, ArgumentCountMismatch, NotANumber, NotACons, NotAnObject, InvalidKey, TypeMismatch };
 
 /// Our simple bytecode instructions.
 pub const Instruction = union(enum) {
     /// Push an integer constant onto the stack.
     PushConst: f64,
+    PushConstString: []const u8,
     Add,
     Sub,
     Mul,
@@ -66,8 +56,12 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
     while (pc < instructions.len) {
         const instr = instructions[pc];
         switch (instr) {
-            .PushConst => {
-                try stack.append(LispVal{ .Number = instr.PushConst });
+            .PushConst => |c| {
+                try stack.append(LispVal{ .Number = c });
+                pc += 1;
+            },
+            .PushConstString => |s| {
+                try stack.append(LispVal{ .String = s });
                 pc += 1;
             },
             .Add => {

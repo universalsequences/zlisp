@@ -38,7 +38,7 @@ fn isDigit(ch: u8) bool {
     return ch >= '0' and ch <= '9';
 }
 
-fn parseList(parser: *Parser) anyerror!lisp.LispVal {
+fn parseList(parser: *Parser, allocator: std.mem.Allocator) anyerror!lisp.LispVal {
     var list = std.ArrayList(lisp.LispVal).init(std.heap.page_allocator);
     // Note: In a production interpreter, eventually deinit/free the list.
     parser.skipWhitespace();
@@ -48,7 +48,7 @@ fn parseList(parser: *Parser) anyerror!lisp.LispVal {
             _ = parser.next(); // consume ')'
             break;
         }
-        const expr = try parseExpr(parser);
+        const expr = try parseExpr(parser, allocator);
         try list.append(expr);
         parser.skipWhitespace();
     }
@@ -90,7 +90,7 @@ fn parseSymbol(parser: *Parser) anyerror!lisp.LispVal {
     return lisp.LispVal{ .Symbol = sym };
 }
 
-fn parseObject(parser: *Parser) anyerror!lisp.LispVal {
+fn parseObject(parser: *Parser, allocator: std.mem.Allocator) anyerror!lisp.LispVal {
     // We'll accumulate object entries in an ArrayList.
     var entries = std.ArrayList(lisp.ObjectEntry).init(std.heap.page_allocator);
     defer entries.deinit();
@@ -112,7 +112,7 @@ fn parseObject(parser: *Parser) anyerror!lisp.LispVal {
         {
             // This is a spread entry.
             parser.skipWhitespace();
-            const spreadExpr = try parseExpr(parser);
+            const spreadExpr = try parseExpr(parser, allocator);
             try entries.append(lisp.ObjectEntry{ .Spread = spreadExpr });
         } else {
             // Not a spread; treat token as a key.
@@ -122,7 +122,7 @@ fn parseObject(parser: *Parser) anyerror!lisp.LispVal {
             const key = token.Symbol;
             parser.skipWhitespace();
             // Parse the value corresponding to this key.
-            const value_expr = try parseExpr(parser);
+            const value_expr = try parseExpr(parser, allocator);
             try entries.append(lisp.ObjectEntry{ .Pair = .{ .key = key, .value = value_expr } });
         }
         parser.skipWhitespace();
@@ -132,17 +132,67 @@ fn parseObject(parser: *Parser) anyerror!lisp.LispVal {
     return lisp.LispVal{ .ObjectLiteral = owned_entries };
 }
 
+/// parseString: parses a string literal with double quotes.
+/// Supports basic escape sequences: \" \\ \/ \n \t \r.
+fn parseString(parser: *Parser, allocator: std.mem.Allocator) anyerror!lisp.LispVal {
+    // Consume the opening double quote.
+    if (parser.next() != '"') return error.UnexpectedEOF;
+
+    // We'll accumulate characters in a dynamic array.
+    var buffer = std.ArrayList(u8).init(std.heap.page_allocator);
+    defer buffer.deinit();
+
+    while (true) {
+        const ch = parser.peek();
+        if (ch == null) {
+            return error.UnexpectedEOF;
+        }
+        if (ch.? == '"') {
+            // Found closing quote.
+            _ = parser.next(); // consume the closing quote
+            break;
+        } else if (ch.? == '\\') {
+            // Handle escape sequences.
+            _ = parser.next(); // consume the backslash
+            const esc = parser.next();
+            if (esc == null) return error.UnexpectedEOF;
+            const escChar = esc.?;
+            // Handle common escapes.
+            if (escChar == '"' or escChar == '\\' or escChar == '/') {
+                try buffer.append(escChar);
+            } else if (escChar == 'n') {
+                try buffer.append('\n');
+            } else if (escChar == 't') {
+                try buffer.append('\t');
+            } else if (escChar == 'r') {
+                try buffer.append('\r');
+            } else {
+                // Unknown escape: for now, simply append the character.
+                try buffer.append(escChar);
+            }
+        } else {
+            try buffer.append(ch.?);
+            _ = parser.next();
+        }
+    }
+    // Duplicate the contents of the buffer into persistent memory.
+    const result_str = try allocator.dupe(u8, try buffer.toOwnedSlice());
+    return lisp.LispVal{ .String = result_str };
+}
+
 /// parseExpr now also recognizes object literals.
-pub fn parseExpr(parser: *Parser) anyerror!lisp.LispVal {
+pub fn parseExpr(parser: *Parser, allocator: std.mem.Allocator) anyerror!lisp.LispVal {
     parser.skipWhitespace();
     const ch = parser.peek();
     if (ch == null) return error.UnexpectedEOF;
-    if (ch.? == '(') {
+    if (ch.? == '"') {
+        return parseString(parser, allocator);
+    } else if (ch.? == '(') {
         _ = parser.next(); // consume '('
-        return parseList(parser);
+        return parseList(parser, allocator);
     } else if (ch.? == '{') {
         _ = parser.next(); // consume '{'
-        return parseObject(parser);
+        return parseObject(parser, allocator);
     } else if (isDigit(ch.?) or (ch.? == '-' and parser.pos + 1 < parser.input.len and
         (isDigit(parser.input[parser.pos + 1]) or parser.input[parser.pos + 1] == '.')))
     {

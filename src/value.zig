@@ -72,6 +72,7 @@ pub const LispVal = union(enum) {
     Cons: *Cons,
     Native: NativeFunc,
     Nil,
+    String: []const u8,
     ObjectLiteral: []ObjectEntry,
     Object: *RuntimeObject,
 
@@ -79,6 +80,9 @@ pub const LispVal = union(enum) {
         return switch (self) {
             .Number => |n| {
                 return try std.fmt.allocPrint(allocator, "{d}", .{n});
+            },
+            .String => |s| {
+                return try std.fmt.allocPrint(allocator, "\"{!s}\"", .{s});
             },
             .Symbol => |s| {
                 return try std.fmt.allocPrint(allocator, "{!s}", .{s});

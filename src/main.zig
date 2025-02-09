@@ -22,7 +22,7 @@ pub fn main() anyerror!void {
         if (line.len == 0) break;
 
         var p = parser.Parser.init(line);
-        const expr = try parser.parseExpr(&p);
+        const expr = try parser.parseExpr(&p, allocator);
 
         var instructions = std.ArrayList(vm.Instruction).init(allocator);
         defer instructions.deinit();

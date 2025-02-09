@@ -45,9 +45,9 @@ pub fn compileObject(expr: LispVal, instructions: *std.ArrayList(vm.Instruction)
 
 pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), allocator: std.mem.Allocator, currentEnv: *Env) anyerror!void {
     switch (expr) {
-        .Number => {
+        .Number => |n| {
             // For a number, push it onto the stack.
-            try instructions.append(Instruction{ .PushConst = expr.Number });
+            try instructions.append(Instruction{ .PushConst = n });
         },
         // A bare symbol is assumed to be a variable reference.
         .Symbol => {
@@ -55,6 +55,10 @@ pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), all
             // Duplicate the string so that it is persistent.
             const persistentName = try allocator.dupe(u8, expr.Symbol);
             try instructions.append(Instruction{ .LoadVar = persistentName });
+        },
+        .String => |n| {
+            // For a number, push it onto the stack.
+            try instructions.append(Instruction{ .PushConstString = n });
         },
         .Function => {},
         .Native => {},

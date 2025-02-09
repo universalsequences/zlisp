@@ -73,6 +73,117 @@ pub fn builtin_lt(args: []LispVal, _: std.mem.Allocator) anyerror!LispVal {
     return LispVal{ .Number = result };
 }
 
+pub fn builtin_eq(args: []LispVal, _: std.mem.Allocator) anyerror!LispVal {
+    if (args.len != 2) return vm.VMError.ArgumentCountMismatch;
+    // Assume both arguments are numbers:
+    if (@as(std.meta.Tag(LispVal), args[0]) != .Number or
+        @as(std.meta.Tag(LispVal), args[1]) != .Number)
+    {
+        return vm.VMError.NotANumber;
+    }
+    const result: f64 = if (args[0].Number == args[1].Number) 1 else 0;
+    return LispVal{ .Number = result };
+}
+
+pub fn builtin_concat(args: []LispVal, allocator: std.mem.Allocator) anyerror!LispVal {
+    // Check that exactly two arguments were provided.
+    if (args.len != 2) return vm.VMError.ArgumentCountMismatch;
+    const a = args[0];
+    const b = args[1];
+
+    // Determine if both are strings.
+    if (@as(std.meta.Tag(LispVal), a) == .String and
+        @as(std.meta.Tag(LispVal), b) == .String)
+    {
+        const str_a = a.String;
+        const str_b = b.String;
+        // Concatenate the two string slices.
+        // We'll use std.mem.concat with an empty separator.
+        var parts = [_][]const u8{ str_a, str_b };
+        const new_str = try std.mem.join(allocator, "", &parts);
+        return LispVal{ .String = new_str };
+    }
+    // Determine if both are cons-based lists.
+    else if (@as(std.meta.Tag(LispVal), a) == .Cons and
+        @as(std.meta.Tag(LispVal), b) == .Cons)
+    {
+        return try concatCons(a.Cons, b.Cons, allocator);
+    } else {
+        return vm.VMError.NotANumber; // Or define a more descriptive type-mismatch error.
+    }
+}
+
+/// Helper function to concatenate two cons-based lists.
+/// It clones the first list (so as not to mutate it) and then sets the tail of the
+/// clone to point to the second list.
+fn concatCons(a: *Cons, b: *Cons, allocator: std.mem.Allocator) anyerror!LispVal {
+    // We'll build a new copy of the first list.
+    var head: ?*Cons = null;
+    var tail: ?*Cons = null;
+    var current = a;
+    while (true) {
+        // Allocate a new cons cell.
+        const newCell = try allocator.create(Cons);
+        newCell.* = Cons{
+            .car = current.car,
+            // We'll fill in cdr later.
+            .cdr = LispVal{ .Nil = {} },
+        };
+        if (head == null) {
+            head = newCell;
+        } else {
+            // Link the new cell to the previous cell.
+            tail.?.cdr = LispVal{ .Cons = newCell };
+        }
+        tail = newCell;
+        // Check if current.cdr is a cons cell; if not, we've reached the end.
+        if (@as(std.meta.Tag(LispVal), current.cdr) == .Cons) {
+            current = current.cdr.Cons;
+        } else {
+            break;
+        }
+    }
+    // Link the tail of the cloned list to the second list.
+    tail.?.cdr = LispVal{ .Cons = b };
+    // Return the newly built list.
+    return LispVal{ .Cons = head.? };
+}
+
+pub fn builtin_len(args: []LispVal, _: std.mem.Allocator) anyerror!LispVal {
+    if (args.len != 1) return vm.VMError.ArgumentCountMismatch;
+    const arg = args[0];
+    const tag = @as(std.meta.Tag(LispVal), arg);
+
+    if (tag == .String) {
+        // For a string, the length is the number of code units (bytes).
+        const len = arg.String.len;
+        return LispVal{ .Number = @floatFromInt(len) };
+    } else if (tag == .List) {
+        // For a literal list, use the length of the slice.
+        const len: u32 = @intCast(arg.List.len);
+        return LispVal{ .Number = @floatFromInt(len) };
+    } else if (tag == .Cons) {
+        // For cons-based lists, traverse the linked list until you reach Nil
+        var count: usize = 0;
+        var cur: LispVal = arg;
+        while (true) {
+            const curTag = @as(std.meta.Tag(LispVal), cur);
+            if (curTag == .Cons) {
+                count += 1;
+                cur = cur.Cons.cdr;
+            } else if (curTag == .Nil) {
+                break;
+            } else {
+                // If it's an improper list, we simply stop here.
+                break;
+            }
+        }
+        return LispVal{ .Number = @floatFromInt(count) };
+    } else {
+        return vm.VMError.TypeMismatch;
+    }
+}
+
 pub fn wrapNative(comptime func: fn ([]LispVal, std.mem.Allocator) anyerror!LispVal) NativeFunc {
     return struct {
         fn wrapped(args_ptr: *anyopaque, len: usize, allocator: std.mem.Allocator) anyerror!*anyopaque {
@@ -94,5 +205,8 @@ pub fn init(globalEnv: *lisp.Env) !void {
     try globalEnv.put("list", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_list)) });
     try globalEnv.put("nil?", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_isnil)) });
     try globalEnv.put("<", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_lt)) });
+    try globalEnv.put("==", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_eq)) });
+    try globalEnv.put("concat", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_concat)) });
+    try globalEnv.put("len", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_len)) });
     try globalEnv.put("nil", LispVal.Nil);
 }
