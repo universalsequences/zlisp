@@ -5,35 +5,22 @@ const LispVal = lisp.LispVal;
 const Env = lisp.Env;
 const FnValue = lisp.FnValue;
 
-////// VM
-//////
-
-//// ENV
+//// Virtual Machine
 ////
-
-/// Error values for function definitions.
-pub const DefineError = error{
-    InvalidFunctionDefinition,
-    InvalidParameter,
-};
+////
 
 pub const VMError = error{ StackUnderflow, InvalidResult, DivisionByZero, VariableNotFound, NotAFunction, ArgumentCountMismatch, NotANumber, NotACons };
 
 /// Our simple bytecode instructions.
 pub const Instruction = union(enum) {
     /// Push an integer constant onto the stack.
-    PushConst: i64,
-    /// Add the top two stack values.
+    PushConst: f64,
     Add,
-    /// Subtract (second-from-top minus top).
     Sub,
-    /// Multiply the top two values.
     Mul,
-    /// Divide (second-from-top divided by top).
     Div,
     Return,
     LoadVar: []const u8,
-    /// Store the top-of-stack value into the variable with the given name.
     StoreVar: []const u8,
     DefineFunc: []const u8,
     PushFunc: *FnValue,
@@ -41,10 +28,6 @@ pub const Instruction = union(enum) {
     Jump: u32, // Unconditional jump with relative offset.
     JumpIfFalse: u32, // Conditional jump: if condition is false, add offset to pc.
 };
-
-//// Virtual Machine
-////
-////
 
 pub fn isArgsNumbers(a: LispVal, b: LispVal) bool {
     return switch (a) {
@@ -60,14 +43,11 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
     // Create a stack to hold i64 values.
     var stack = std.ArrayList(LispVal).init(allocator);
 
-    std.log.debug("{any}", .{instructions});
-
     defer stack.deinit();
 
     var pc: usize = 0;
     while (pc < instructions.len) {
         const instr = instructions[pc];
-        std.log.debug("pc={d} instruction={any}", .{ pc, instr });
         switch (instr) {
             .PushConst => {
                 try stack.append(LispVal{ .Number = instr.PushConst });
@@ -225,10 +205,6 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
                 pc += @intCast(instr.Jump);
             },
         }
-    }
-    std.log.debug("stack.items.length = {d}\n", .{stack.items.len});
-    for (stack.items) |item| {
-        std.log.debug("stack item = {!s}\n", .{item.toString(allocator)});
     }
     // At the end, there should be exactly one value on the stack.
     if (stack.items.len != 1) return VMError.InvalidResult;

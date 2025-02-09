@@ -34,29 +34,42 @@ pub const Parser = struct {
     }
 };
 
-fn parseNumber(parser: *Parser) !lisp.LispVal {
+fn isDigit(ch: u8) bool {
+    return ch >= '0' and ch <= '9';
+}
+
+/// parseNumber now supports negative numbers and floats.
+fn parseNumber(parser: *Parser) anyerror!lisp.LispVal {
     const start = parser.pos;
     // Allow for a negative sign.
     if (parser.peek().? == '-') {
         _ = parser.next();
     }
+    // Consume digits before any decimal point.
     while (true) {
         const ch = parser.peek();
         if (ch == null or !isDigit(ch.?)) break;
         _ = parser.next();
     }
+    // If there is a decimal point, consume it and following digits.
+    if (parser.peek() != null and parser.peek().? == '.') {
+        _ = parser.next();
+        while (true) {
+            const ch = parser.peek();
+            if (ch == null or !isDigit(ch.?)) break;
+            _ = parser.next();
+        }
+    }
+    // Optional: You can later add exponent handling here.
     const numStr = parser.input[start..parser.pos];
-    const value = try std.fmt.parseInt(i64, numStr, 10);
+    // Parse the string into a floating-point value.
+    const value = try std.fmt.parseFloat(f64, numStr);
     return lisp.LispVal{ .Number = value };
-}
-
-fn isDigit(ch: u8) bool {
-    return ch >= '0' and ch <= '9';
 }
 
 fn parseList(parser: *Parser) anyerror!lisp.LispVal {
     var list = std.ArrayList(lisp.LispVal).init(std.heap.page_allocator);
-    // Note: In a production interpreter, ensure you eventually deinit/free the list.
+    // Note: In a production interpreter, eventually deinit/free the list.
     parser.skipWhitespace();
     while (true) {
         if (parser.peek() == null) return error.UnexpectedEOF;
@@ -68,8 +81,6 @@ fn parseList(parser: *Parser) anyerror!lisp.LispVal {
         try list.append(expr);
         parser.skipWhitespace();
     }
-    // For simplicity, we return a LispVal.List referring to the internal array.
-    // (In a real interpreter, consider copying the list to a long-lived allocation.)
     return lisp.LispVal{ .List = try list.toOwnedSlice() };
 }
 
@@ -90,11 +101,16 @@ pub fn parseExpr(parser: *Parser) anyerror!lisp.LispVal {
     if (ch == null) {
         return error.UnexpectedEOF;
     }
-    if (ch.? == '(') {
+    // Decide if this is a number:
+    // If the character is a digit, or it’s '-' followed by a digit or a '.'
+    if (isDigit(ch.?) or
+        (ch.? == '-' and parser.pos + 1 < parser.input.len and
+        (isDigit(parser.input[parser.pos + 1]) or parser.input[parser.pos + 1] == '.')))
+    {
+        return parseNumber(parser);
+    } else if (ch.? == '(') {
         _ = parser.next(); // consume '('
         return parseList(parser);
-    } else if (isDigit(ch.?) or ch.? == '-') {
-        return parseNumber(parser);
     } else {
         return parseSymbol(parser);
     }

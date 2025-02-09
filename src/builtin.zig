@@ -54,7 +54,7 @@ pub fn builtin_list(args: []LispVal, allocator: std.mem.Allocator) anyerror!Lisp
 }
 
 pub fn builtin_isnil(args: []LispVal, _: std.mem.Allocator) anyerror!LispVal {
-    const result: u32 = switch (args[0]) {
+    const result: f64 = switch (args[0]) {
         .Nil => 1,
         else => 0,
     };
@@ -69,7 +69,7 @@ pub fn builtin_lt(args: []LispVal, _: std.mem.Allocator) anyerror!LispVal {
     {
         return vm.VMError.NotANumber;
     }
-    const result: u32 = if (args[0].Number < args[1].Number) 1 else 0;
+    const result: f64 = if (args[0].Number < args[1].Number) 1 else 0;
     return LispVal{ .Number = result };
 }
 

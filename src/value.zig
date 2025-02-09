@@ -51,7 +51,7 @@ pub const Cons = struct {
 pub const NativeFunc = *const fn (*anyopaque, len: usize, allocator: std.mem.Allocator) anyerror!*anyopaque;
 
 pub const LispVal = union(enum) {
-    Number: i64,
+    Number: f64,
     Symbol: []const u8,
     List: []LispVal,
     Function: *FnValue,
