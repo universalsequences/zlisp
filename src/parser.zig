@@ -79,7 +79,6 @@ fn parseNumber(parser: *Parser) anyerror!lisp.LispVal {
     return lisp.LispVal{ .Number = value };
 }
 
-/// parseSymbol remains mostly unchanged.
 fn parseSymbol(parser: *Parser) anyerror!lisp.LispVal {
     const start = parser.pos;
     while (true) {
@@ -91,7 +90,6 @@ fn parseSymbol(parser: *Parser) anyerror!lisp.LispVal {
     return lisp.LispVal{ .Symbol = sym };
 }
 
-/// New: parseObject parses an object literal.
 fn parseObject(parser: *Parser) anyerror!lisp.LispVal {
     // We'll accumulate object entries in an ArrayList.
     var entries = std.ArrayList(lisp.ObjectEntry).init(std.heap.page_allocator);
