@@ -50,6 +50,20 @@ pub const Cons = struct {
 
 pub const NativeFunc = *const fn (*anyopaque, len: usize, allocator: std.mem.Allocator) anyerror!*anyopaque;
 
+pub const ObjectEntry = union(enum) {
+    // A normal key-value pair.
+    Pair: struct {
+        key: []const u8,
+        value: LispVal,
+    },
+    // A spread entry; the expression following "..." will be merged.
+    Spread: LispVal,
+};
+
+pub const RuntimeObject = struct {
+    table: std.StringHashMap(LispVal),
+};
+
 pub const LispVal = union(enum) {
     Number: f64,
     Symbol: []const u8,
@@ -58,6 +72,8 @@ pub const LispVal = union(enum) {
     Cons: *Cons,
     Native: NativeFunc,
     Nil,
+    ObjectLiteral: []ObjectEntry,
+    Object: *RuntimeObject,
 
     pub fn toString(self: LispVal, allocator: std.mem.Allocator) anyerror![]const u8 {
         return switch (self) {
@@ -79,6 +95,51 @@ pub const LispVal = union(enum) {
             },
             .Native => {
                 return "*native";
+            },
+            .Object => |objPtr| {
+                var parts = std.ArrayList([]const u8).init(allocator);
+                defer parts.deinit();
+                defer {
+                    // Free all the allocated strings we stored
+                    for (parts.items) |part| {
+                        allocator.free(part);
+                    }
+                }
+
+                var iter = objPtr.table.iterator();
+                while (iter.next()) |entry| {
+                    const keyStr = entry.key_ptr.*;
+                    const valStr = try entry.value_ptr.*.toString(allocator);
+                    defer allocator.free(valStr);
+
+                    const part = try std.fmt.allocPrint(allocator, "{s}: {s}", .{ keyStr, valStr });
+                    try parts.append(part);
+                }
+
+                const joined = try std.mem.join(allocator, ", ", parts.items);
+                defer allocator.free(joined);
+
+                return std.fmt.allocPrint(allocator, "{{{s}}}", .{joined});
+            },
+            .ObjectLiteral => |entries| {
+                // For simplicity, print as {key1: val1, key2: val2, ...}
+                var parts = std.ArrayList([]const u8).init(allocator);
+                defer parts.deinit();
+                for (entries) |entry| {
+                    const part = switch (entry) {
+                        .Pair => |pair| {
+                            const keyStr = pair.key;
+                            const valStr = try pair.value.toString(allocator);
+                            return try std.fmt.allocPrint(allocator, "{s}: {s}", .{ keyStr, valStr });
+                        },
+                        .Spread => |spreadExpr| {
+                            return try std.fmt.allocPrint(allocator, "...{s}", .{try spreadExpr.toString(allocator)});
+                        },
+                    };
+                    try parts.append(part);
+                }
+                const joined = try std.mem.join(allocator, ", ", parts.items);
+                return std.fmt.allocPrint(allocator, "< {s} >", .{joined});
             },
             .Cons => |consPtr| {
                 // Debug print to see the actual values

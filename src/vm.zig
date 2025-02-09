@@ -4,12 +4,24 @@ const lisp = @import("value.zig");
 const LispVal = lisp.LispVal;
 const Env = lisp.Env;
 const FnValue = lisp.FnValue;
+const RuntimeObject = lisp.RuntimeObject;
 
 //// Virtual Machine
 ////
 ////
 
-pub const VMError = error{ StackUnderflow, InvalidResult, DivisionByZero, VariableNotFound, NotAFunction, ArgumentCountMismatch, NotANumber, NotACons };
+pub const VMError = error{
+    StackUnderflow,
+    InvalidResult,
+    DivisionByZero,
+    VariableNotFound,
+    NotAFunction,
+    ArgumentCountMismatch,
+    NotANumber,
+    NotACons,
+    NotAnObject,
+    InvalidKey,
+};
 
 /// Our simple bytecode instructions.
 pub const Instruction = union(enum) {
@@ -27,6 +39,10 @@ pub const Instruction = union(enum) {
     Call: u32, // the number of arguments
     Jump: u32, // Unconditional jump with relative offset.
     JumpIfFalse: u32, // Conditional jump: if condition is false, add offset to pc.
+    PushEmptyObject,
+    PushConstSymbol: []const u8,
+    CallObjSet: u32,
+    CallObjMerge: u32,
 };
 
 pub fn isArgsNumbers(a: LispVal, b: LispVal) bool {
@@ -40,6 +56,7 @@ pub fn isArgsNumbers(a: LispVal, b: LispVal) bool {
 }
 
 pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: std.mem.Allocator) anyerror!LispVal {
+    std.log.debug("executing: {any}", .{instructions});
     // Create a stack to hold i64 values.
     var stack = std.ArrayList(LispVal).init(allocator);
 
@@ -203,6 +220,56 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
             },
             .Jump => {
                 pc += @intCast(instr.Jump);
+            },
+            .PushEmptyObject => {
+                // Allocate a new runtime object.
+                const obj_ptr = try allocator.create(RuntimeObject);
+                obj_ptr.* = RuntimeObject{
+                    .table = std.StringHashMap(LispVal).init(allocator),
+                };
+                try stack.append(LispVal{ .Object = obj_ptr });
+                pc += 1;
+            },
+            .PushConstSymbol => {
+                // Duplicate the symbol string so it lives persistently.
+                const persistentKey = try allocator.dupe(u8, instr.PushConstSymbol);
+                try stack.append(LispVal{ .Symbol = persistentKey });
+                pc += 1;
+            },
+            .CallObjSet => {
+                // Expect the stack order (from top):
+                // [ value, key, object ]
+                if (stack.items.len < 3) return VMError.StackUnderflow;
+                const value_val = stack.pop();
+                const key_val = stack.pop();
+                const obj_val = stack.pop();
+                if (@as(std.meta.Tag(LispVal), obj_val) != .Object) return VMError.NotAnObject;
+                if (@as(std.meta.Tag(LispVal), key_val) != .Symbol) return VMError.InvalidKey;
+                const obj_ptr = obj_val.Object;
+                const key_str = key_val.Symbol;
+                // Update the object's hash map.
+                try obj_ptr.table.put(key_str, value_val);
+                // Push the updated object back.
+                try stack.append(LispVal{ .Object = obj_ptr });
+                pc += 1;
+            },
+            .CallObjMerge => {
+                std.log.debug("about to merge\n", .{});
+                // For merging, expect two objects on the stack: source then destination.
+                if (stack.items.len < 2) return VMError.StackUnderflow;
+                const src_obj_val = stack.pop();
+                const dst_obj_val = stack.pop();
+                if (@as(std.meta.Tag(LispVal), dst_obj_val) != .Object) return VMError.NotAnObject;
+                if (@as(std.meta.Tag(LispVal), src_obj_val) != .Object) return VMError.NotAnObject;
+                const dst_ptr = dst_obj_val.Object;
+                const src_ptr = src_obj_val.Object;
+                var iter = src_ptr.table.iterator();
+                while (iter.next()) |entry| {
+                    try dst_ptr.table.put(entry.key_ptr.*, entry.value_ptr.*);
+                }
+                // Push the merged object back.
+                try stack.append(LispVal{ .Object = dst_ptr });
+                pc += 1;
             },
         }
     }

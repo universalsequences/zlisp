@@ -14,6 +14,35 @@ pub const CompileError = error{
     UnsupportedExpression,
 };
 
+pub fn compileObject(expr: LispVal, instructions: *std.ArrayList(vm.Instruction), allocator: std.mem.Allocator, currentEnv: *Env) anyerror!void {
+    // We assume that 'expr' is a LispVal with tag Object.
+    // First, push an empty object onto the stack.
+    try instructions.append(vm.Instruction.PushEmptyObject);
+
+    // Retrieve the slice of object entries.
+    const entries = expr.ObjectLiteral;
+    // Iterate over each object entry.
+    for (entries) |entry| {
+        switch (entry) {
+            .Pair => |pair| {
+                // For a key-value pair, first push the key as a constant symbol.
+                try instructions.append(vm.Instruction{ .PushConstSymbol = pair.key });
+                // Then compile the value expression.
+                try compileExpr(pair.value, instructions, allocator, currentEnv);
+                // Now update the object by calling the object-set operation.
+                // We use CallObjSet with an argument count of 2 (the key and value).
+                try instructions.append(vm.Instruction{ .CallObjSet = 2 });
+            },
+            .Spread => |spreadExpr| {
+                // For a spread entry, compile the spread expression.
+                try compileExpr(spreadExpr, instructions, allocator, currentEnv);
+                // Then merge it into the current object.
+                try instructions.append(vm.Instruction{ .CallObjMerge = 1 });
+            },
+        }
+    }
+}
+
 pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), allocator: std.mem.Allocator, currentEnv: *Env) anyerror!void {
     switch (expr) {
         .Number => {
@@ -29,6 +58,10 @@ pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), all
         },
         .Function => {},
         .Native => {},
+        .Object => {},
+        .ObjectLiteral => {
+            try compileObject(expr, instructions, allocator, currentEnv);
+        },
         .Cons => {},
         .Nil => {},
         .List => {
