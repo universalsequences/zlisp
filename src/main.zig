@@ -18,21 +18,33 @@ pub fn main() anyerror!void {
 
     while (true) {
         try stdout.print("> ", .{});
-        const line = try stdin.readUntilDelimiterAlloc(allocator, '\n', 1024);
+        const line = stdin.readUntilDelimiterAlloc(allocator, '\n', 1024) catch |err| {
+            try stdout.print("Input error: {}\n", .{err});
+            continue;
+        };
+        defer allocator.free(line);
+
         if (line.len == 0) break;
 
-        var p = parser.Parser.init(line);
-        const expr = try parser.parseExpr(&p, allocator);
+        var parsed = parser.Parser.init(line);
+        const expr = parser.parseExpr(&parsed, allocator) catch |err| {
+            try stdout.print("Parse error: {}\n", .{err});
+            continue;
+        };
 
         var instructions = std.ArrayList(vm.Instruction).init(allocator);
         defer instructions.deinit();
-        try compiler.compileExpr(expr, &instructions, allocator, &globalEnv);
 
-        // Execute the bytecode.
-        const result = try vm.executeInstructions(try instructions.toOwnedSlice(), &globalEnv, allocator);
+        compiler.compileExpr(expr, &instructions, allocator, &globalEnv) catch |err| {
+            try stdout.print("Compile error: {}\n", .{err});
+            continue;
+        };
+
+        const result = vm.executeInstructions(try instructions.toOwnedSlice(), &globalEnv, allocator) catch |err| {
+            try stdout.print("Execution error: {}\n", .{err});
+            continue;
+        };
 
         try stdout.print("Result: {!s}\n", .{result.toString(allocator)});
-
-        allocator.free(line);
     }
 }

@@ -184,6 +184,39 @@ pub fn builtin_len(args: []LispVal, _: std.mem.Allocator) anyerror!LispVal {
     }
 }
 
+pub fn builtin_get(args: []LispVal, _: std.mem.Allocator) anyerror!LispVal {
+    const first = args[0];
+    const second = args[1];
+
+    // Handle Object case
+    if (first == .Object) {
+        if (second == .String) {
+            return first.Object.table.get(second.String) orelse LispVal.Nil;
+        }
+        return LispVal.Nil;
+    }
+
+    // Handle Cons case
+    if (first == .Cons) {
+        if (second != .Number) return LispVal.Nil;
+
+        const n = second.Number;
+        if (n < 0) return LispVal.Nil;
+
+        var current = first.Cons;
+        const index = @as(usize, @intFromFloat(n));
+
+        for (0..index) |_| {
+            if (current.car == LispVal.Nil) return LispVal.Nil;
+            if (current.cdr != .Cons) return LispVal.Nil;
+            current = current.cdr.Cons;
+        }
+        return current.car;
+    }
+
+    return LispVal.Nil;
+}
+
 pub fn wrapNative(comptime func: fn ([]LispVal, std.mem.Allocator) anyerror!LispVal) NativeFunc {
     return struct {
         fn wrapped(args_ptr: *anyopaque, len: usize, allocator: std.mem.Allocator) anyerror!*anyopaque {
@@ -209,4 +242,5 @@ pub fn init(globalEnv: *lisp.Env) !void {
     try globalEnv.put("concat", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_concat)) });
     try globalEnv.put("len", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_len)) });
     try globalEnv.put("nil", LispVal.Nil);
+    try globalEnv.put("get", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_get)) });
 }
