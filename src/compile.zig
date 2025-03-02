@@ -94,6 +94,9 @@ pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), all
                                 // Compile the expression whose value will be assigned.
                                 const varNamePersistent = try allocator.dupe(u8, varName);
                                 try compileExpr(expr.List[2], instructions, allocator, currentEnv);
+
+                                // Duplicate the top stack element so that the stack has it's value after the store
+                                try instructions.append(Instruction.Dup);
                                 // Emit a StoreVar instruction to save the value.
                                 try instructions.append(Instruction{ .StoreVar = varNamePersistent });
                             },
@@ -161,6 +164,26 @@ pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), all
 
                         // Now generate instructions to push the function and then define it.
                         try instructions.append(Instruction{ .PushFunc = fnPtr });
+                    } else if (std.mem.eql(u8, opStr, "let")) {
+                        const bindings = expr.List[1];
+                        if (@as(std.meta.Tag(LispVal), bindings) != .List) {
+                            return CompileError.InvalidExpression;
+                        }
+                        var i: usize = 0;
+
+                        try instructions.append(Instruction.EnterScope);
+
+                        while (i < bindings.List.len) : (i += 1) {
+                            // each element in let variable clause must a list
+                            const elem = bindings.List[i];
+                            if (@as(std.meta.Tag(LispVal), elem) != .List) {
+                                return CompileError.InvalidExpression;
+                            }
+                            try compileExpr(elem.List[1], instructions, allocator, currentEnv);
+                            try instructions.append(Instruction{ .StoreVar = elem.List[0].Symbol });
+                        }
+                        try compileExpr(expr.List[2], instructions, allocator, currentEnv);
+                        try instructions.append(Instruction.ExitScope);
                     } else if (std.mem.eql(u8, opStr, "if")) {
                         // Compile the condition.
                         // (if condition then else)
@@ -201,25 +224,25 @@ pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), all
                             while (i < expr.List.len) : (i += 1) {
                                 try compileExpr(expr.List[i], instructions, allocator, currentEnv);
                             }
-                            try instructions.append(Instruction.Add);
+                            try instructions.append(Instruction{ .Add = expr.List.len - 1 });
                         } else if (std.mem.eql(u8, opStr, "-")) {
                             var i: usize = 1;
                             while (i < expr.List.len) : (i += 1) {
                                 try compileExpr(expr.List[i], instructions, allocator, currentEnv);
                             }
-                            try instructions.append(Instruction.Sub);
+                            try instructions.append(Instruction{ .Sub = expr.List.len - 1 });
                         } else if (std.mem.eql(u8, opStr, "*")) {
                             var i: usize = 1;
                             while (i < expr.List.len) : (i += 1) {
                                 try compileExpr(expr.List[i], instructions, allocator, currentEnv);
                             }
-                            try instructions.append(Instruction.Mul);
+                            try instructions.append(Instruction{ .Mul = expr.List.len - 1 });
                         } else if (std.mem.eql(u8, opStr, "/")) {
                             var i: usize = 1;
                             while (i < expr.List.len) : (i += 1) {
                                 try compileExpr(expr.List[i], instructions, allocator, currentEnv);
                             }
-                            try instructions.append(Instruction.Div);
+                            try instructions.append(Instruction{ .Div = expr.List.len - 1 });
                         } else {
                             // otherwise we handle function calls, with the Instruction.Call bytecode
                             // First, compile the function expression (i.e. LoadVar the symbol)
