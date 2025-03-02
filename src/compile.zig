@@ -133,6 +133,34 @@ pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), all
                         try instructions.append(Instruction{ .PushFunc = fnPtr });
                         try instructions.append(Instruction{ .DefineFunc = fnName });
                         return;
+                    } else if (std.mem.eql(u8, opStr, "lambda")) {
+                        const paramsExpr = expr.List[1];
+                        if (@as(std.meta.Tag(LispVal), paramsExpr) != .List) return error.InvalidFunctionDefinition;
+                        const paramsList = paramsExpr.List;
+                        var paramNames = try allocator.alloc([]const u8, paramsList.len);
+                        for (paramsList, 0..) |param, i| {
+                            if (@as(std.meta.Tag(LispVal), param) != .Symbol) return error.InvalidFunctionDefinition;
+                            paramNames[i] = try allocator.dupe(u8, param.Symbol);
+                        }
+
+                        const bodyExpr = expr.List[2];
+                        // Compile the function body into its own instruction array.
+                        var funcInstructions = std.ArrayList(Instruction).init(allocator);
+                        defer funcInstructions.deinit();
+                        try compileExpr(bodyExpr, &funcInstructions, allocator, currentEnv);
+                        // Append an explicit Return instruction.
+                        try funcInstructions.append(Instruction.Return);
+
+                        // Allocate a new FnValue for the function.
+                        const fnPtr = try allocator.create(FnValue);
+                        fnPtr.* = FnValue{
+                            .params = paramNames,
+                            .code = try funcInstructions.toOwnedSlice(),
+                            .env = currentEnv,
+                        };
+
+                        // Now generate instructions to push the function and then define it.
+                        try instructions.append(Instruction{ .PushFunc = fnPtr });
                     } else if (std.mem.eql(u8, opStr, "if")) {
                         // Compile the condition.
                         // (if condition then else)
@@ -207,6 +235,17 @@ pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), all
                             try instructions.append(Instruction{ .Call = argCount });
                         }
                     }
+                },
+                .List => {
+                    try compileExpr(expr.List[0], instructions, allocator, currentEnv);
+                    // Then compile each argument.
+                    for (expr.List[1..]) |arg| {
+                        try compileExpr(arg, instructions, allocator, currentEnv);
+                    }
+
+                    // Finally, append the Call instruction with the argument count.
+                    const argCount: u32 = @intCast(expr.List.len - 1);
+                    try instructions.append(Instruction{ .Call = argCount });
                 },
                 else => return CompileError.InvalidOperator,
             }

@@ -21,6 +21,7 @@ pub const Env = struct {
     }
 
     /// Look up a variable by key in the chain of environments.
+    /// The chaining gives us closures
     pub fn get(self: Env, key: []const u8) ?LispVal {
         if (self.vars.get(key)) |value| return value;
         if (self.parent) |p| return p.get(key);
