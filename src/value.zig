@@ -71,10 +71,12 @@ pub const LispVal = union(enum) {
     Function: *FnValue,
     Cons: *Cons,
     Native: NativeFunc,
+    Quote: *LispVal,
     Nil,
     String: []const u8,
     ObjectLiteral: []ObjectEntry,
     Object: *RuntimeObject,
+    Vector: []f32,
 
     pub fn toString(self: LispVal, allocator: std.mem.Allocator) anyerror![]const u8 {
         return switch (self) {
@@ -86,6 +88,19 @@ pub const LispVal = union(enum) {
             },
             .Symbol => |s| {
                 return try std.fmt.allocPrint(allocator, "{!s}", .{s});
+            },
+            .Vector => |lst| {
+                var parts = std.ArrayList([]const u8).init(allocator);
+                defer parts.deinit();
+                for (lst) |item| {
+                    const part = try std.fmt.allocPrint(allocator, "{d}", .{item});
+                    try parts.append(part);
+                }
+                const joined = try std.mem.join(allocator, " ", parts.items);
+                return try std.fmt.allocPrint(allocator, "(vector {s})", .{joined});
+            },
+            .Quote => |quote| {
+                return try std.fmt.allocPrint(allocator, "{!s}", .{quote.toString(allocator)});
             },
             .List => |lst| {
                 var parts = std.ArrayList([]const u8).init(allocator);

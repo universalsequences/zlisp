@@ -1,5 +1,6 @@
 const std = @import("std");
 const lisp = @import("value.zig");
+const builtin = @import("builtin.zig");
 
 const LispVal = lisp.LispVal;
 const Env = lisp.Env;
@@ -17,6 +18,7 @@ pub const Instruction = union(enum) {
     /// Push an integer constant onto the stack.
     PushConst: f64,
     PushConstString: []const u8,
+    PushQuote: LispVal,
     Add,
     Sub,
     Mul,
@@ -45,8 +47,63 @@ pub fn isArgsNumbers(a: LispVal, b: LispVal) bool {
     };
 }
 
+pub fn isArgsVectors(a: LispVal, b: LispVal) bool {
+    return switch (a) {
+        .Vector => switch (b) {
+            .Vector => true,
+            else => false,
+        },
+        else => false,
+    };
+}
+
+const VectorOp = enum {
+    Add,
+    Sub,
+    Mul,
+    Div,
+};
+
+fn applyVectorOp(comptime op: VectorOp, allocator: std.mem.Allocator, v1: []f32, v2: []f32) ![]f32 {
+    if (v1.len != v2.len) return error.VectorLengthMismatch;
+    var result = try allocator.alloc(f32, v1.len);
+    errdefer allocator.free(result);
+
+    const Vector = @Vector(4, f32);
+    var i: usize = 0;
+
+    // Process in chunks of 4 using SIMD
+    while (i + 4 <= v1.len) {
+        const chunk1: Vector = @as(*const [4]f32, @ptrCast(v1.ptr + i)).*;
+        const chunk2: Vector = @as(*const [4]f32, @ptrCast(v2.ptr + i)).*;
+
+        // Apply the operation based on the enum
+        const out = switch (op) {
+            .Add => chunk1 + chunk2,
+            .Sub => chunk1 - chunk2,
+            .Mul => chunk1 * chunk2,
+            .Div => chunk1 / chunk2,
+        };
+
+        @as(*[4]f32, @ptrCast(result.ptr + i)).* = @as([4]f32, out);
+        i += 4;
+    }
+
+    // Handle remaining elements
+    while (i < v1.len) : (i += 1) {
+        result[i] = switch (op) {
+            .Add => v1[i] + v2[i],
+            .Sub => v1[i] - v2[i],
+            .Mul => v1[i] * v2[i],
+            .Div => v1[i] / v2[i],
+        };
+    }
+
+    return result;
+}
+
 pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: std.mem.Allocator) anyerror!LispVal {
-    std.log.debug("executing: {any}", .{instructions});
+    std.log.debug("{any}", .{instructions});
     // Create a stack to hold i64 values.
     var stack = std.ArrayList(LispVal).init(allocator);
 
@@ -64,16 +121,31 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
                 try stack.append(LispVal{ .String = s });
                 pc += 1;
             },
+            .PushQuote => |quote| {
+                switch (quote) {
+                    .List => |list| {
+                        try stack.append(try builtin.builtin_list(list, allocator));
+                    },
+                    else => {
+                        try stack.append(quote);
+                    },
+                }
+                pc += 1;
+            },
             .Add => {
                 if (stack.items.len < 2) return VMError.StackUnderflow;
                 const b = stack.items[stack.items.len - 1];
                 stack.items.len -= 1;
                 const a = stack.items[stack.items.len - 1];
                 stack.items.len -= 1;
-                if (!isArgsNumbers(a, b)) {
+                if (isArgsVectors(a, b)) {
+                    const sum = try applyVectorOp(.Add, allocator, a.Vector, b.Vector);
+                    try stack.append(LispVal{ .Vector = sum });
+                } else if (!isArgsNumbers(a, b)) {
                     return VMError.NotANumber;
+                } else {
+                    try stack.append(LispVal{ .Number = a.Number + b.Number });
                 }
-                try stack.append(LispVal{ .Number = a.Number + b.Number });
                 pc += 1;
             },
             .Sub => {
@@ -82,10 +154,14 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
                 stack.items.len -= 1;
                 const a = stack.items[stack.items.len - 1];
                 stack.items.len -= 1;
-                if (!isArgsNumbers(a, b)) {
+                if (isArgsVectors(a, b)) {
+                    const sum = try applyVectorOp(.Sub, allocator, a.Vector, b.Vector);
+                    try stack.append(LispVal{ .Vector = sum });
+                } else if (!isArgsNumbers(a, b)) {
                     return VMError.NotANumber;
+                } else {
+                    try stack.append(LispVal{ .Number = a.Number - b.Number });
                 }
-                try stack.append(LispVal{ .Number = a.Number - b.Number });
                 pc += 1;
             },
             .Mul => {
@@ -94,10 +170,14 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
                 stack.items.len -= 1;
                 const a = stack.items[stack.items.len - 1];
                 stack.items.len -= 1;
-                if (!isArgsNumbers(a, b)) {
+                if (isArgsVectors(a, b)) {
+                    const sum = try applyVectorOp(.Mul, allocator, a.Vector, b.Vector);
+                    try stack.append(LispVal{ .Vector = sum });
+                } else if (!isArgsNumbers(a, b)) {
                     return VMError.NotANumber;
+                } else {
+                    try stack.append(LispVal{ .Number = a.Number * b.Number });
                 }
-                try stack.append(LispVal{ .Number = a.Number * b.Number });
                 pc += 1;
             },
             .Div => {
@@ -106,20 +186,38 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
                 stack.items.len -= 1;
                 const a = stack.items[stack.items.len - 1];
                 stack.items.len -= 1;
-                if (!isArgsNumbers(a, b)) {
+                if (isArgsVectors(a, b)) {
+                    const sum = try applyVectorOp(.Div, allocator, a.Vector, b.Vector);
+                    try stack.append(LispVal{ .Vector = sum });
+                } else if (!isArgsNumbers(a, b)) {
                     return VMError.NotANumber;
+                } else if (b.Number == 0) {
+                    return VMError.DivisionByZero;
+                } else {
+                    try stack.append(LispVal{ .Number = @divExact(a.Number, b.Number) });
                 }
-                if (b.Number == 0) return VMError.DivisionByZero;
-                try stack.append(LispVal{ .Number = @divExact(a.Number, b.Number) });
                 pc += 1;
             },
             .LoadVar => {
-                const varName = instr.LoadVar;
+                const varName: []const u8 = instr.LoadVar;
                 // Look up the variable in the environment.
                 if (env.get(varName)) |val| {
                     try stack.append(val);
                 } else {
-                    return VMError.VariableNotFound;
+                    switch (varName[0]) {
+                        '+', '-', '*', '/' => {
+                            try stack.append(LispVal{ .Symbol = varName });
+                        },
+                        else => {
+                            if (std.mem.startsWith(u8, varName, "max") or
+                                std.mem.startsWith(u8, varName, "min"))
+                            {
+                                try stack.append(LispVal{ .Symbol = varName });
+                            } else {
+                                return VMError.VariableNotFound;
+                            }
+                        },
+                    }
                 }
                 pc += 1;
             },

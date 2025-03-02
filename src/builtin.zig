@@ -192,6 +192,8 @@ pub fn builtin_get(args: []LispVal, _: std.mem.Allocator) anyerror!LispVal {
     if (first == .Object) {
         if (second == .String) {
             return first.Object.table.get(second.String) orelse LispVal.Nil;
+        } else if (second == .Symbol) {
+            return first.Object.table.get(second.Symbol) orelse LispVal.Nil;
         }
         return LispVal.Nil;
     }
@@ -217,6 +219,186 @@ pub fn builtin_get(args: []LispVal, _: std.mem.Allocator) anyerror!LispVal {
     return LispVal.Nil;
 }
 
+pub fn builtin_vector(args: []LispVal, allocator: std.mem.Allocator) anyerror!LispVal {
+    const first = args[0];
+
+    switch (first) {
+        .Cons => {
+            return LispVal.Nil;
+        },
+        .Number => {
+            // otherwise we have a list of numbers mayble
+            var f = try allocator.alloc(f32, args.len);
+            @memset(f, 0);
+            for (args, 0..args.len) |item, i| {
+                switch (item) {
+                    .Number => |x| {
+                        f[i] = @floatCast(x);
+                    },
+                    else => {
+                        return vm.VMError.TypeMismatch;
+                    },
+                }
+            }
+            return LispVal{ .Vector = f };
+        },
+        else => {
+            return LispVal.Nil;
+        },
+    }
+}
+
+pub fn builtin_reduce(args: []LispVal, _: std.mem.Allocator) anyerror!LispVal {
+    switch (args[0]) {
+        .Symbol => |op| {
+            switch (args[1]) {
+                .Vector => |v| {
+                    if (v.len == 0) return vm.VMError.TypeMismatch;
+
+                    const Vector = @Vector(4, f32);
+                    var result: f32 = undefined;
+
+                    if (op[0] == '+') {
+                        if (v.len >= 4) {
+                            const first_chunk: Vector = @as(*const [4]f32, @ptrCast(v.ptr)).*;
+                            result = @reduce(.Add, first_chunk);
+                            var i: usize = 4;
+
+                            while (i + 4 <= v.len) : (i += 4) {
+                                const chunk: Vector = @as(*const [4]f32, @ptrCast(v.ptr + i)).*;
+                                result += @reduce(.Add, chunk);
+                            }
+
+                            while (i < v.len) : (i += 1) {
+                                result += v[i];
+                            }
+                        } else {
+                            result = v[0];
+                            for (v[1..]) |val| {
+                                result += val;
+                            }
+                        }
+                    } else if (op[0] == '*') {
+                        if (v.len >= 4) {
+                            const first_chunk: Vector = @as(*const [4]f32, @ptrCast(v.ptr)).*;
+                            result = @reduce(.Mul, first_chunk);
+                            var i: usize = 4;
+
+                            while (i + 4 <= v.len) : (i += 4) {
+                                const chunk: Vector = @as(*const [4]f32, @ptrCast(v.ptr + i)).*;
+                                result *= @reduce(.Mul, chunk);
+                            }
+
+                            while (i < v.len) : (i += 1) {
+                                result *= v[i];
+                            }
+                        } else {
+                            result = v[0];
+                            for (v[1..]) |val| {
+                                result *= val;
+                            }
+                        }
+                    } else if (std.mem.eql(u8, op, "min")) {
+                        if (v.len >= 4) {
+                            const first_chunk: Vector = @as(*const [4]f32, @ptrCast(v.ptr)).*;
+                            result = @reduce(.Min, first_chunk);
+                            var i: usize = 4;
+
+                            while (i + 4 <= v.len) : (i += 4) {
+                                const chunk: Vector = @as(*const [4]f32, @ptrCast(v.ptr + i)).*;
+                                result = @min(result, @reduce(.Min, chunk));
+                            }
+
+                            while (i < v.len) : (i += 1) {
+                                result = @min(result, v[i]);
+                            }
+                        } else {
+                            result = v[0];
+                            for (v[1..]) |val| {
+                                result = @min(result, val);
+                            }
+                        }
+                    } else if (std.mem.eql(u8, op, "max")) {
+                        if (v.len >= 4) {
+                            const first_chunk: Vector = @as(*const [4]f32, @ptrCast(v.ptr)).*;
+                            result = @reduce(.Max, first_chunk);
+                            var i: usize = 4;
+
+                            while (i + 4 <= v.len) : (i += 4) {
+                                const chunk: Vector = @as(*const [4]f32, @ptrCast(v.ptr + i)).*;
+                                result = @max(result, @reduce(.Min, chunk));
+                            }
+
+                            while (i < v.len) : (i += 1) {
+                                result = @max(result, v[i]);
+                            }
+                        } else {
+                            result = v[0];
+                            for (v[1..]) |val| {
+                                result = @max(result, val);
+                            }
+                        }
+                    } else {
+                        return vm.VMError.NotAFunction;
+                    }
+
+                    return LispVal{ .Number = result };
+                },
+                else => {
+                    return vm.VMError.TypeMismatch;
+                },
+            }
+        },
+        else => {
+            return vm.VMError.TypeMismatch;
+        },
+    }
+}
+
+pub fn builtin_stride(args: []LispVal, allocator: std.mem.Allocator) anyerror!LispVal {
+    // Check arguments: (stride vector stride_size offset)
+    if (args.len != 3) return vm.VMError.ArgumentCountMismatch;
+
+    switch (args[0]) {
+        .Vector => |input| {
+            switch (args[1]) {
+                .Number => |stride_size| {
+                    switch (args[2]) {
+                        .Number => |offset_size| {
+                            const stride = @as(usize, @intFromFloat(stride_size));
+                            const offset = @as(usize, @intFromFloat(offset_size));
+
+                            if (stride <= 0) return vm.VMError.TypeMismatch;
+                            if (offset >= input.len) return vm.VMError.TypeMismatch;
+                            if (stride > input.len) return vm.VMError.TypeMismatch;
+
+                            // Calculate size of output vector
+                            const out_len = (input.len - offset + stride - 1) / stride;
+                            var result = try allocator.alloc(f32, out_len);
+                            errdefer allocator.free(result);
+
+                            // Fill the output vector
+                            var out_idx: usize = 0;
+                            var in_idx: usize = offset;
+                            while (in_idx < input.len) : ({
+                                in_idx += stride;
+                                out_idx += 1;
+                            }) {
+                                result[out_idx] = input[in_idx];
+                            }
+
+                            return LispVal{ .Vector = result };
+                        },
+                        else => return vm.VMError.TypeMismatch,
+                    }
+                },
+                else => return vm.VMError.TypeMismatch,
+            }
+        },
+        else => return vm.VMError.TypeMismatch,
+    }
+}
+
 pub fn wrapNative(comptime func: fn ([]LispVal, std.mem.Allocator) anyerror!LispVal) NativeFunc {
     return struct {
         fn wrapped(args_ptr: *anyopaque, len: usize, allocator: std.mem.Allocator) anyerror!*anyopaque {
@@ -240,6 +422,9 @@ pub fn init(globalEnv: *lisp.Env) !void {
     try globalEnv.put("<", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_lt)) });
     try globalEnv.put("==", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_eq)) });
     try globalEnv.put("concat", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_concat)) });
+    try globalEnv.put("#", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_vector)) });
+    try globalEnv.put("@reduce", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_reduce)) });
+    try globalEnv.put("@stride", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_stride)) });
     try globalEnv.put("len", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_len)) });
     try globalEnv.put("nil", LispVal.Nil);
     try globalEnv.put("get", LispVal{ .Native = @as(lisp.NativeFunc, wrapNative(builtin_get)) });

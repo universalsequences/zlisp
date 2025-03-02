@@ -60,6 +60,10 @@ pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), all
             // For a number, push it onto the stack.
             try instructions.append(Instruction{ .PushConstString = n });
         },
+        .Vector => {},
+        .Quote => |quote| {
+            try instructions.append(Instruction{ .PushQuote = quote.* });
+        },
         .Function => {},
         .Native => {},
         .Object => {},

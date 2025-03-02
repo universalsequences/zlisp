@@ -79,7 +79,7 @@ fn parseNumber(parser: *Parser) anyerror!lisp.LispVal {
     return lisp.LispVal{ .Number = value };
 }
 
-fn parseSymbol(parser: *Parser) anyerror!lisp.LispVal {
+fn parseSymbol(parser: *Parser, allocator: std.mem.Allocator) anyerror!lisp.LispVal {
     const start = parser.pos;
     while (true) {
         const ch = parser.peek();
@@ -87,7 +87,10 @@ fn parseSymbol(parser: *Parser) anyerror!lisp.LispVal {
         _ = parser.next();
     }
     const sym = parser.input[start..parser.pos];
-    return lisp.LispVal{ .Symbol = sym };
+    // Duplicate the symbol into persistent memory.
+    const persistent_sym = try allocator.dupe(u8, sym);
+    return lisp.LispVal{ .Symbol = persistent_sym };
+    //return lisp.LispVal{ .Symbol = sym };
 }
 
 fn parseObject(parser: *Parser, allocator: std.mem.Allocator) anyerror!lisp.LispVal {
@@ -106,7 +109,7 @@ fn parseObject(parser: *Parser, allocator: std.mem.Allocator) anyerror!lisp.Lisp
 
         // Check for spread operator.
         // We assume the spread operator is given exactly as the symbol "..."
-        const token = try parseSymbol(parser); // This returns a Symbol.
+        const token = try parseSymbol(parser, allocator); // This returns a Symbol.
         if (@as(std.meta.Tag(lisp.LispVal), token) == .Symbol and
             std.mem.eql(u8, token.Symbol, "..."))
         {
@@ -180,6 +183,33 @@ fn parseString(parser: *Parser, allocator: std.mem.Allocator) anyerror!lisp.Lisp
     return lisp.LispVal{ .String = result_str };
 }
 
+pub fn parseQuote(parser: *Parser, allocator: std.mem.Allocator) anyerror!lisp.LispVal {
+    const expr = try parseExpr(parser, allocator);
+    // Allocate persistent memory for a copy of the expression.
+    const persistentExpr = try allocator.create(lisp.LispVal);
+    persistentExpr.* = expr;
+    // Return a LispVal with the Quote variant, holding the pointer.
+    return lisp.LispVal{ .Quote = persistentExpr };
+}
+
+pub fn parseVector(parser: *Parser, allocator: std.mem.Allocator) anyerror!lisp.LispVal {
+    const expr = try parseExpr(parser, allocator);
+    switch (expr) {
+        .List => |list| {
+            const vec = try allocator.alloc(lisp.LispVal, list.len + 1);
+            for (list, 0..list.len) |item, i| {
+                vec[i + 1] = item;
+            }
+            vec[0] = lisp.LispVal{ .Symbol = "#" };
+            const y = lisp.LispVal{ .List = vec };
+            return y;
+        },
+        else => {
+            return lisp.LispVal.Nil;
+        },
+    }
+}
+
 /// parseExpr now also recognizes object literals.
 pub fn parseExpr(parser: *Parser, allocator: std.mem.Allocator) anyerror!lisp.LispVal {
     parser.skipWhitespace();
@@ -193,11 +223,17 @@ pub fn parseExpr(parser: *Parser, allocator: std.mem.Allocator) anyerror!lisp.Li
     } else if (ch.? == '{') {
         _ = parser.next(); // consume '{'
         return parseObject(parser, allocator);
+    } else if (ch.? == '#') {
+        _ = parser.next(); // consume '{'
+        return parseVector(parser, allocator);
+    } else if (ch.? == '\'') {
+        _ = parser.next();
+        return parseQuote(parser, allocator);
     } else if (isDigit(ch.?) or (ch.? == '-' and parser.pos + 1 < parser.input.len and
         (isDigit(parser.input[parser.pos + 1]) or parser.input[parser.pos + 1] == '.')))
     {
         return parseNumber(parser);
     } else {
-        return parseSymbol(parser);
+        return parseSymbol(parser, allocator);
     }
 }
