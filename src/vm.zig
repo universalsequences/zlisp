@@ -140,12 +140,19 @@ fn defineFunction(name: []const u8, pattern: LispVal, code: []Instruction, env: 
     }
 }
 
-fn matchPattern(pattern: LispVal, arg: LispVal) ?struct { name: ?[]const u8, value: LispVal } {
-    return switch (pattern) {
-        .Number => |n| if (arg == .Number and arg.Number == n) .{ .name = null, .value = arg } else null, // Exact match
-        .Symbol => |s| .{ .name = s, .value = arg }, // Bind to symbol
-        else => null, // No match
-    };
+fn matchPatterns(patterns: []LispVal, args: []LispVal, allocator: std.mem.Allocator) !?std.StringHashMap(LispVal) {
+    if (patterns.len != args.len) return null; // Argument count must match pattern count
+    var bindings = std.StringHashMap(LispVal).init(allocator);
+
+    for (patterns, args) |pat, arg| {
+        switch (pat) {
+            .Symbol => |s| try bindings.put(s, arg), // Bind symbol to argument
+            .Number => |n| if (arg != .Number or arg.Number != n) return null, // Literal must match
+            // Add cases for other literal types (e.g., .String) as needed
+            else => return null, // Unsupported pattern type
+        }
+    }
+    return bindings; // Return bindings if all patterns match
 }
 
 pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: std.mem.Allocator) anyerror!LispVal {
@@ -373,7 +380,7 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
                 const func = funcVal.?.Function;
                 var found = false;
                 for (func.defs.items, 0..) |def, i| {
-                    if (std.meta.eql(def.pattern, funcDefPtr.pattern)) {
+                    if (std.meta.eql(def.patterns, funcDefPtr.patterns)) {
                         // exact match for pattern in symbol
                         const closurePtr = try allocator.create(Env);
                         closurePtr.* = Env.init(allocator, current_frame.env);
@@ -449,13 +456,14 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
 
                             // Handle named functions with pattern matching
                             for (defs.items) |def| {
-                                if (matchPattern(def.pattern, arg)) |binding| {
+                                if (try matchPatterns(def.patterns, args, allocator)) |bindings| {
                                     const closurePtr = try allocator.create(Env);
                                     closurePtr.* = Env.init(allocator, fnPtr.env);
 
                                     //var localEnv = Env.init(allocator, fnPtr.env);
-                                    if (binding.name) |name| {
-                                        try closurePtr.put(name, binding.value);
+                                    var iter = bindings.iterator();
+                                    while (iter.next()) |entry| {
+                                        try closurePtr.put(entry.key_ptr.*, entry.value_ptr.*); // Set bindings in local env
                                     }
                                     try call_stack.append(Frame{
                                         .code = def.code,

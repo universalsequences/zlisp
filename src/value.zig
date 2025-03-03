@@ -36,7 +36,7 @@ pub const Env = struct {
 };
 
 pub const FunctionDef = struct {
-    pattern: LispVal, // The pattern to match (e.g., Number(1) or Symbol("n"))
+    patterns: []LispVal, // The pattern to match (e.g., Number(1) or Symbol("n"))
     code: []vm.Instruction, // Instructions to execute if the pattern matches
 };
 

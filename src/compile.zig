@@ -109,10 +109,10 @@ pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), all
                         if (@as(std.meta.Tag(LispVal), nameVal) != .Symbol) return error.InvalidFunctionDefinition;
                         const fnName = try allocator.dupe(u8, nameVal.Symbol);
 
-                        // Extract the pattern from paramsExpr, which is a list with one element
+                        // Extract the pattern list from paramsExpr
                         const patternExpr = expr.List[2];
-                        if (@as(std.meta.Tag(LispVal), patternExpr) != .List or patternExpr.List.len != 1) return error.InvalidPattern;
-                        const pattern = patternExpr.List[0]; // e.g., Number(1) or Symbol("n")
+                        if (@as(std.meta.Tag(LispVal), patternExpr) != .List) return error.InvalidPattern;
+                        const patterns = patternExpr.List; // e.g., [Symbol("a"), Symbol("b")] or [Symbol("n")]
 
                         // Compile the body into instructions
                         const bodyExpr = expr.List[3];
@@ -121,10 +121,10 @@ pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), all
                         try compileExpr(bodyExpr, &funcInstructions, allocator, currentEnv);
                         try funcInstructions.append(Instruction.Return);
 
-                        // Create a FunctionDef with the pattern and compiled code
+                        // Create a FunctionDef with the list of patterns and compiled code
                         const funcDefPtr = try allocator.create(FunctionDef);
                         funcDefPtr.* = FunctionDef{
-                            .pattern = pattern,
+                            .patterns = patterns,
                             .code = try funcInstructions.toOwnedSlice(),
                         };
 
