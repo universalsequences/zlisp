@@ -7,13 +7,10 @@ pub const Env = struct {
     parent: ?*Env,
     vars: std.StringHashMap(LispVal),
     allocator: std.mem.Allocator,
+    id: i32,
 
     pub fn init(allocator: std.mem.Allocator, parent: ?*Env) Env {
-        return Env{
-            .parent = parent,
-            .vars = std.StringHashMap(LispVal).init(allocator),
-            .allocator = allocator,
-        };
+        return Env{ .parent = parent, .vars = std.StringHashMap(LispVal).init(allocator), .allocator = allocator, .id = if (parent) |p| p.id else 1 };
     }
 
     pub fn deinit(self: *Env) void {
@@ -23,8 +20,12 @@ pub const Env = struct {
     /// Look up a variable by key in the chain of environments.
     /// The chaining gives us closures
     pub fn get(self: Env, key: []const u8) ?LispVal {
-        if (self.vars.get(key)) |value| return value;
-        if (self.parent) |p| return p.get(key);
+        if (self.vars.get(key)) |value| {
+            return value;
+        }
+        if (self.parent) |p| {
+            return p.get(key);
+        }
         return null;
     }
 
@@ -34,14 +35,16 @@ pub const Env = struct {
     }
 };
 
-/// A function value: parameters, body, and the closure environment.
+pub const FunctionDef = struct {
+    pattern: LispVal, // The pattern to match (e.g., Number(1) or Symbol("n"))
+    code: []vm.Instruction, // Instructions to execute if the pattern matches
+};
+
 pub const FnValue = struct {
-    /// The parameter names (each a persistent string).
-    params: []const []const u8,
-    /// The body expression (or perhaps a list of expressions).
-    code: []vm.Instruction,
-    /// The closure: the environment where the function was defined.
-    env: *Env,
+    defs: std.ArrayList(FunctionDef),
+    params: ?[]const []const u8, // Parameter names for lambdas (null for named functions)
+    code: ?[]vm.Instruction, // Single code block for lambdas (null for named functions)
+    env: *Env, // The environment captured by the function
 };
 
 pub const Cons = struct {
@@ -70,6 +73,7 @@ pub const LispVal = union(enum) {
     Symbol: []const u8,
     List: []LispVal,
     Function: *FnValue,
+    FunctionDef: *FunctionDef,
     Cons: *Cons,
     Native: NativeFunc,
     Quote: *LispVal,
@@ -86,6 +90,9 @@ pub const LispVal = union(enum) {
             },
             .String => |s| {
                 return try std.fmt.allocPrint(allocator, "\"{!s}\"", .{s});
+            },
+            .FunctionDef => {
+                return "";
             },
             .Symbol => |s| {
                 return try std.fmt.allocPrint(allocator, "{!s}", .{s});

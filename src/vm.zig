@@ -3,6 +3,7 @@ const lisp = @import("value.zig");
 const builtin = @import("builtin.zig");
 
 const LispVal = lisp.LispVal;
+const FunctionDef = lisp.FunctionDef;
 const Env = lisp.Env;
 const FnValue = lisp.FnValue;
 const RuntimeObject = lisp.RuntimeObject;
@@ -11,7 +12,7 @@ const RuntimeObject = lisp.RuntimeObject;
 ////
 ////
 
-pub const VMError = error{ StackUnderflow, InvalidResult, DivisionByZero, VariableNotFound, NotAFunction, ArgumentCountMismatch, NotANumber, NotACons, NotAnObject, InvalidKey, TypeMismatch, NoParentScope };
+pub const VMError = error{ StackUnderflow, InvalidResult, DivisionByZero, InvalidType, VariableNotFound, NotAFunction, ArgumentCountMismatch, NotANumber, NotACons, NotAnObject, InvalidKey, TypeMismatch, NoParentScope };
 
 const Frame = struct {
     code: []Instruction,
@@ -36,6 +37,8 @@ pub const Instruction = union(enum) {
     LoadVar: []const u8,
     StoreVar: []const u8,
     DefineFunc: []const u8,
+    PushFuncDef: *FunctionDef,
+    DefineFuncDef: []const u8,
     PushFunc: *FnValue,
     Call: u32, // the number of arguments
     Jump: u32, // Unconditional jump with relative offset.
@@ -109,6 +112,40 @@ fn applyVectorOp(comptime op: VectorOp, allocator: std.mem.Allocator, v1: []f32,
     }
 
     return result;
+}
+
+fn defineFunction(name: []const u8, pattern: LispVal, code: []Instruction, env: *Env) !void {
+    var funcVal = env.get(name);
+
+    if (funcVal == null or funcVal.? != .Function) {
+        // No function exists yet, or it's not a function; create a new one
+        var newFunc = FnValue{
+            .defs = std.ArrayList(FunctionDef).init(env.allocator),
+            .env = env,
+        };
+        try newFunc.defs.append(.{ .pattern = pattern, .code = code });
+        try env.put(name, LispVal{ .Function = &newFunc });
+    } else {
+        // Function exists; update or append
+        var func = &funcVal.?.Function;
+        for (func.defs.items, 0..) |def, i| {
+            if (std.meta.eql(def.pattern, pattern)) {
+                // Pattern matches; replace the existing definition
+                func.defs.items[i] = .{ .pattern = pattern, .code = code };
+                return;
+            }
+        }
+        // No matching pattern found; append the new definition
+        try func.defs.append(.{ .pattern = pattern, .code = code });
+    }
+}
+
+fn matchPattern(pattern: LispVal, arg: LispVal) ?struct { name: ?[]const u8, value: LispVal } {
+    return switch (pattern) {
+        .Number => |n| if (arg == .Number and arg.Number == n) .{ .name = null, .value = arg } else null, // Exact match
+        .Symbol => |s| .{ .name = s, .value = arg }, // Bind to symbol
+        else => null, // No match
+    };
 }
 
 pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: std.mem.Allocator) anyerror!LispVal {
@@ -307,9 +344,63 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
                 try current_frame.env.put(funcName, funcVal);
                 current_frame.pc += 1;
             },
+            .DefineFuncDef => |name| {
+                if (stack.items.len < 1) return VMError.StackUnderflow;
+
+                const funcDefVal = stack.items[stack.items.len - 1];
+                if (@as(std.meta.Tag(LispVal), funcDefVal) != .FunctionDef) return VMError.InvalidType;
+                const funcDefPtr = funcDefVal.FunctionDef;
+
+                const persistentName = try allocator.dupe(u8, name);
+
+                var funcVal = current_frame.env.get(persistentName);
+                if (funcVal == null or @as(std.meta.Tag(LispVal), funcVal.?) != .Function) {
+                    // first one for that key
+                    const fnPtr = try allocator.create(FnValue);
+
+                    const closurePtr = try allocator.create(Env);
+                    closurePtr.* = Env.init(allocator, current_frame.env);
+                    fnPtr.* = FnValue{
+                        .defs = std.ArrayList(FunctionDef).init(allocator),
+                        .code = null, // Optional: No code block for named function
+                        .params = null,
+                        .env = closurePtr,
+                    };
+                    try current_frame.env.put(persistentName, LispVal{ .Function = fnPtr });
+                    funcVal = current_frame.env.get(persistentName);
+                }
+
+                const func = funcVal.?.Function;
+                var found = false;
+                for (func.defs.items, 0..) |def, i| {
+                    if (std.meta.eql(def.pattern, funcDefPtr.pattern)) {
+                        // exact match for pattern in symbol
+                        const closurePtr = try allocator.create(Env);
+                        closurePtr.* = Env.init(allocator, current_frame.env);
+                        func.defs.items[i] = funcDefPtr.*;
+                        func.env = closurePtr;
+                        found = true;
+                        break; // Exit the loop, not the function
+                    }
+                }
+                if (!found) {
+                    // appending new pattern to symbol function
+                    const closurePtr = try allocator.create(Env);
+                    closurePtr.* = Env.init(allocator, current_frame.env);
+                    func.env = closurePtr;
+                    try func.defs.append(funcDefPtr.*);
+
+                    try current_frame.env.put(persistentName, LispVal{ .Function = func });
+                }
+                current_frame.pc += 1;
+            },
             // Push a function pointer onto the stack
             .PushFunc => |fnPtr| {
                 try stack.append(LispVal{ .Function = fnPtr });
+                current_frame.pc += 1;
+            },
+            .PushFuncDef => |funcDefPtr| {
+                try stack.append(LispVal{ .FunctionDef = funcDefPtr });
                 current_frame.pc += 1;
             },
             // Return from the current frame
@@ -324,30 +415,60 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
                 }
             },
             // Function call
-            .Call => |argCount| {
-                if (stack.items.len < argCount + 1) return VMError.StackUnderflow;
-                // Pop arguments and function
-                var args = try allocator.alloc(LispVal, argCount);
+            .Call => {
+                // Check stack for function and argument
+                if (stack.items.len < 2) return VMError.StackUnderflow;
+                const argCount = instr.Call; // Number of arguments from the instruction
+                var args = try allocator.alloc(LispVal, argCount); // Allocate array for arguments
+                defer allocator.free(args); // Free the array after use
                 for (0..argCount) |i| {
-                    args[argCount - 1 - i] = stack.pop();
+                    args[argCount - 1 - i] = stack.pop(); // Pop arguments in reverse order
                 }
+                const arg = args[0];
                 const funcVal = stack.pop();
+
                 switch (funcVal) {
                     .Function => |fnPtr| {
-                        if (args.len != fnPtr.params.len) return VMError.ArgumentCountMismatch;
-                        // Create a new environment for the function
-                        var localEnv = Env.init(allocator, fnPtr.env);
-                        for (0..args.len) |i| {
-                            try localEnv.put(fnPtr.params[i], args[i]);
+                        if (fnPtr.params) |params| {
+                            // Handle lambdas with a simple parameter list
+
+                            var localEnv = Env.init(allocator, fnPtr.env);
+
+                            // For simplicity, assume a single argument here; extend for multiple args as needed
+                            if (params.len != 1) return VMError.ArgumentCountMismatch;
+                            try localEnv.put(params[0], arg);
+
+                            try call_stack.append(Frame{
+                                .code = fnPtr.code.?, // Use the single code block
+                                .pc = 0, // Start at the beginning
+                                .env = &localEnv, // Use the new environment with bound params
+                            });
+                            current_frame.pc += 1;
+                        } else {
+                            const defs = fnPtr.defs;
+
+                            // Handle named functions with pattern matching
+                            for (defs.items) |def| {
+                                if (matchPattern(def.pattern, arg)) |binding| {
+                                    const closurePtr = try allocator.create(Env);
+                                    closurePtr.* = Env.init(allocator, fnPtr.env);
+
+                                    //var localEnv = Env.init(allocator, fnPtr.env);
+                                    if (binding.name) |name| {
+                                        try closurePtr.put(name, binding.value);
+                                    }
+                                    try call_stack.append(Frame{
+                                        .code = def.code,
+                                        .pc = 0,
+                                        .env = closurePtr,
+                                    });
+                                    current_frame.pc += 1;
+                                    break;
+                                }
+                            } else {
+                                return VMError.InvalidKey; // No pattern matched the argument
+                            }
                         }
-                        // Advance the current frame's pc to the next instruction
-                        current_frame.pc += 1;
-                        // Push a new frame for the function
-                        try call_stack.append(Frame{
-                            .code = fnPtr.code,
-                            .pc = 0,
-                            .env = &localEnv,
-                        });
                     },
                     .Native => |nativeFn| {
                         // Execute native function directly

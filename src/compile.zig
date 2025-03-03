@@ -6,6 +6,7 @@ const Instruction = vm.Instruction;
 const LispVal = lisp.LispVal;
 const Env = lisp.Env;
 const FnValue = lisp.FnValue;
+const FunctionDef = lisp.FunctionDef;
 
 ////  Compiler
 pub const CompileError = error{
@@ -65,6 +66,7 @@ pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), all
             try instructions.append(Instruction{ .PushQuote = quote.* });
         },
         .Function => {},
+        .FunctionDef => {},
         .Native => {},
         .Object => {},
         .ObjectLiteral => {
@@ -107,62 +109,58 @@ pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), all
                         if (@as(std.meta.Tag(LispVal), nameVal) != .Symbol) return error.InvalidFunctionDefinition;
                         const fnName = try allocator.dupe(u8, nameVal.Symbol);
 
-                        const paramsExpr = expr.List[2];
-                        if (@as(std.meta.Tag(LispVal), paramsExpr) != .List) return error.InvalidFunctionDefinition;
-                        const paramsList = paramsExpr.List;
-                        var paramNames = try allocator.alloc([]const u8, paramsList.len);
-                        for (paramsList, 0..) |param, i| {
-                            if (@as(std.meta.Tag(LispVal), param) != .Symbol) return error.InvalidFunctionDefinition;
-                            paramNames[i] = try allocator.dupe(u8, param.Symbol);
-                        }
+                        // Extract the pattern from paramsExpr, which is a list with one element
+                        const patternExpr = expr.List[2];
+                        if (@as(std.meta.Tag(LispVal), patternExpr) != .List or patternExpr.List.len != 1) return error.InvalidPattern;
+                        const pattern = patternExpr.List[0]; // e.g., Number(1) or Symbol("n")
 
+                        // Compile the body into instructions
                         const bodyExpr = expr.List[3];
-                        // Compile the function body into its own instruction array.
                         var funcInstructions = std.ArrayList(Instruction).init(allocator);
                         defer funcInstructions.deinit();
                         try compileExpr(bodyExpr, &funcInstructions, allocator, currentEnv);
-                        // Append an explicit Return instruction.
                         try funcInstructions.append(Instruction.Return);
 
-                        // Allocate a new FnValue for the function.
-                        const fnPtr = try allocator.create(FnValue);
-                        fnPtr.* = FnValue{
-                            .params = paramNames,
+                        // Create a FunctionDef with the pattern and compiled code
+                        const funcDefPtr = try allocator.create(FunctionDef);
+                        funcDefPtr.* = FunctionDef{
+                            .pattern = pattern,
                             .code = try funcInstructions.toOwnedSlice(),
-                            .env = currentEnv,
                         };
 
-                        // Now generate instructions to push the function and then define it.
-                        try instructions.append(Instruction{ .PushFunc = fnPtr });
-                        try instructions.append(Instruction{ .DefineFunc = fnName });
+                        // Generate instructions to push the FunctionDef and define it
+                        try instructions.append(Instruction{ .PushFuncDef = funcDefPtr });
+                        try instructions.append(Instruction{ .DefineFuncDef = fnName });
                         return;
                     } else if (std.mem.eql(u8, opStr, "lambda")) {
+                        // Extract the parameter list (e.g., (x y))
                         const paramsExpr = expr.List[1];
-                        if (@as(std.meta.Tag(LispVal), paramsExpr) != .List) return error.InvalidFunctionDefinition;
+                        if (@as(std.meta.Tag(LispVal), paramsExpr) != .List) return error.InvalidLambda;
                         const paramsList = paramsExpr.List;
+
+                        // Collect parameter names
                         var paramNames = try allocator.alloc([]const u8, paramsList.len);
                         for (paramsList, 0..) |param, i| {
-                            if (@as(std.meta.Tag(LispVal), param) != .Symbol) return error.InvalidFunctionDefinition;
+                            if (@as(std.meta.Tag(LispVal), param) != .Symbol) return error.InvalidLambda;
                             paramNames[i] = try allocator.dupe(u8, param.Symbol);
                         }
 
+                        // Compile the body (e.g., (+ x y))
                         const bodyExpr = expr.List[2];
-                        // Compile the function body into its own instruction array.
                         var funcInstructions = std.ArrayList(Instruction).init(allocator);
                         defer funcInstructions.deinit();
                         try compileExpr(bodyExpr, &funcInstructions, allocator, currentEnv);
-                        // Append an explicit Return instruction.
                         try funcInstructions.append(Instruction.Return);
 
-                        // Allocate a new FnValue for the function.
+                        // Create the lambda function value
                         const fnPtr = try allocator.create(FnValue);
                         fnPtr.* = FnValue{
-                            .params = paramNames,
-                            .code = try funcInstructions.toOwnedSlice(),
-                            .env = currentEnv,
+                            .defs = std.ArrayList(FunctionDef).init(allocator),
+                            .params = paramNames, // List of parameters (e.g., ["x", "y"])
+                            .code = try funcInstructions.toOwnedSlice(), // Single compiled body
+                            .env = currentEnv, // Captured environment
                         };
 
-                        // Now generate instructions to push the function and then define it.
                         try instructions.append(Instruction{ .PushFunc = fnPtr });
                     } else if (std.mem.eql(u8, opStr, "let")) {
                         const bindings = expr.List[1];
@@ -255,6 +253,7 @@ pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), all
 
                             // Finally, append the Call instruction with the argument count.
                             const argCount: u32 = @intCast(expr.List.len - 1);
+                            std.log.debug("appending call\n", .{});
                             try instructions.append(Instruction{ .Call = argCount });
                         }
                     }
@@ -266,6 +265,7 @@ pub fn compileExpr(expr: LispVal, instructions: *std.ArrayList(Instruction), all
                         try compileExpr(arg, instructions, allocator, currentEnv);
                     }
 
+                    std.log.debug(".List call push\n", .{});
                     // Finally, append the Call instruction with the argument count.
                     const argCount: u32 = @intCast(expr.List.len - 1);
                     try instructions.append(Instruction{ .Call = argCount });
