@@ -157,7 +157,7 @@ fn matchPatterns(patterns: []LispVal, args: []LispVal, allocator: std.mem.Alloca
     return bindings; // Return bindings if all patterns match
 }
 
-pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: std.mem.Allocator) anyerror!LispVal {
+pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: std.mem.Allocator, gc: ?*gc_mod.GarbageCollector) anyerror!LispVal {
     std.log.debug("{any}\n", .{instructions});
     // Initialize operand stack
     var stack = std.ArrayList(LispVal).init(allocator);
@@ -176,11 +176,12 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
 
     // Main execution loop: continue while there are frames to process
     while (call_stack.items.len > 0) {
-        // GC disabled for now
-        // if (call_stack.items.len % 100 == 0 and gc.objects.items.len > 0) {
-        //     try gc.markRoots(env, stack);
-        //     try gc.collect();
-        // }
+        // Periodically run garbage collection, only if needed and if GC is provided
+        if (gc != null and call_stack.items.len % 100 == 0 and gc.?.objects.items.len > 0) {
+            std.debug.print("Running periodic GC during VM execution\n", .{});
+            try gc.?.markRoots(env, stack);
+            try gc.?.collect();
+        }
         
         // Get a mutable reference to the current frame (top of the call stack)
         var current_frame = &call_stack.items[call_stack.items.len - 1];
@@ -515,12 +516,20 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
             },
             // Push an empty object
             .PushEmptyObject => {
-                // Create object directly, not using GC for now
-                const obj_ptr = try allocator.create(RuntimeObject);
-                obj_ptr.* = RuntimeObject{
-                    .table = std.StringHashMap(LispVal).init(allocator),
-                };
-                try stack.append(LispVal{ .Object = obj_ptr });
+                if (gc) |gc_ptr| {
+                    // Use GC if available
+                    std.debug.print("Creating object via GC\n", .{});
+                    const obj_ptr = try gc_ptr.createObject();
+                    try stack.append(LispVal{ .Object = obj_ptr });
+                } else {
+                    // Fall back to direct allocation
+                    std.debug.print("Creating object directly (no GC)\n", .{});
+                    const obj_ptr = try allocator.create(RuntimeObject);
+                    obj_ptr.* = RuntimeObject{
+                        .table = std.StringHashMap(LispVal).init(allocator),
+                    };
+                    try stack.append(LispVal{ .Object = obj_ptr });
+                }
                 current_frame.pc += 1;
             },
             // Push a constant symbol

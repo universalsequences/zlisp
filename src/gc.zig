@@ -239,23 +239,35 @@ pub const GarbageCollector = struct {
         self.collecting = true;
         defer self.collecting = false;
 
-        // 1. Clear all mark bits
-        for (self.marks.items) |*mark| {
-            std.log.debug("marking {any}", .{mark});
-            mark.* = false;
+        std.debug.print("\nGC: Starting collection cycle with {} objects\n", .{self.objects.items.len});
+
+        // IMPORTANT: We should NOT clear mark bits here because markRoots has already set them!
+        // The marking should be done before calling collect.
+        std.debug.print("GC: Preserving existing mark bits from prior markRoots call\n", .{});
+
+        // 2. Mark phase starts from root set (already done before calling collect)
+        std.debug.print("GC: Checking mark bits directly:\n", .{});
+        for (self.objects.items, self.object_types.items, self.marks.items, 0..) |obj, obj_type, mark, i| {
+            std.debug.print("  Object {}: type={s}, addr={*}, marked={}\n", .{i, @tagName(obj_type), obj, mark});
         }
 
-        // 2. Mark phase: starts from root set (VM stack, global env)
-        // This should be implemented separately and called before collection
+        // Count marked objects
+        var marked_count: usize = 0;
+        for (self.marks.items) |mark| {
+            if (mark) marked_count += 1;
+        }
+        std.debug.print("GC: {} objects marked as reachable\n", .{marked_count});
 
         // 3. Sweep phase: free unmarked objects
         var i: usize = 0;
+        var sweep_count: usize = 0;
         while (i < self.objects.items.len) {
             if (!self.marks.items[i]) {
                 // Object is not marked, free it
                 const obj = self.objects.items[i];
                 const obj_type = self.object_types.items[i];
-                std.log.debug("freeing sweep {any}", .{obj});
+                sweep_count += 1;
+                std.debug.print("GC: freeing {s} at {*}\n", .{@tagName(obj_type), obj});
 
                 switch (obj_type) {
                     .Cons => {
@@ -319,6 +331,8 @@ pub const GarbageCollector = struct {
 
         // Update threshold for next collection
         self.threshold = self.objects.items.len * 2;
+        
+        std.debug.print("GC: Collection complete - freed {} objects, {} objects remaining\n", .{sweep_count, self.objects.items.len});
     }
 
     // Mark a value and its descendants as reachable
@@ -354,12 +368,27 @@ pub const GarbageCollector = struct {
     // Mark a Cons cell and its car/cdr
     fn markCons(self: *GarbageCollector, cons: *Cons) !void {
         // Find and mark the Cons cell
-        for (self.objects.items, self.object_types.items, self.marks.items) |obj, obj_type, *mark| {
+        std.debug.print("debug: attempting to mark cons cell @{*}\n", .{cons});
+        var found = false;
+        
+        // Critical fix: We need to use a pointer to the mark in the array
+        for (self.objects.items, self.object_types.items, 0..) |obj, obj_type, i| {
             if (obj_type == .Cons and obj == @as(*anyopaque, @ptrCast(cons))) {
-                if (mark.*) return; // Already marked
-                mark.* = true;
+                found = true;
+                if (self.marks.items[i]) {
+                    std.debug.print("debug: cons cell already marked\n", .{});
+                    return; // Already marked
+                }
+                
+                // Direct modification of the array element
+                self.marks.items[i] = true;
+                std.debug.print("debug: cons cell marked (index {})\n", .{i});
                 break;
             }
+        }
+        
+        if (!found) {
+            std.debug.print("debug: WARNING - cons cell not found in GC objects!\n", .{});
         }
 
         // Recursively mark car and cdr
@@ -370,10 +399,10 @@ pub const GarbageCollector = struct {
     // Mark a Function value and its environment
     fn markFnValue(self: *GarbageCollector, fn_val: *FnValue) !void {
         // Find and mark the function
-        for (self.objects.items, self.object_types.items, self.marks.items) |obj, obj_type, *mark| {
+        for (self.objects.items, self.object_types.items, 0..) |obj, obj_type, i| {
             if (obj_type == .FnValue and obj == @as(*anyopaque, @ptrCast(fn_val))) {
-                if (mark.*) return; // Already marked
-                mark.* = true;
+                if (self.marks.items[i]) return; // Already marked
+                self.marks.items[i] = true;
                 break;
             }
         }
@@ -393,10 +422,10 @@ pub const GarbageCollector = struct {
     fn markEnv(self: *GarbageCollector, env: *Env) !void {
         // Find and mark the environment
         var found = false;
-        for (self.objects.items, self.object_types.items, self.marks.items) |obj, obj_type, *mark| {
+        for (self.objects.items, self.object_types.items, 0..) |obj, obj_type, i| {
             if (obj_type == .Env and obj == @as(*anyopaque, @ptrCast(env))) {
-                if (mark.*) return; // Already marked
-                mark.* = true;
+                if (self.marks.items[i]) return; // Already marked
+                self.marks.items[i] = true;
                 found = true;
                 break;
             }
@@ -413,20 +442,22 @@ pub const GarbageCollector = struct {
             try self.markEnv(parent);
         }
 
-        // Mark all values in the environment
-        var iter = env.vars.valueIterator();
-        while (iter.next()) |val| {
-            try self.markValue(val.*);
+        // CRITICAL: Mark all values in the environment
+        std.debug.print("debug: marking all vars in env (count={})\n", .{env.vars.count()});
+        var iter = env.vars.iterator();
+        while (iter.next()) |entry| {
+            std.debug.print("debug: marking var {s}\n", .{entry.key_ptr.*});
+            try self.markValue(entry.value_ptr.*);
         }
     }
 
     // Mark an Object and its properties
     fn markObject(self: *GarbageCollector, obj: *RuntimeObject) !void {
         // Find and mark the object
-        for (self.objects.items, self.object_types.items, self.marks.items) |obj_ptr, obj_type, *mark| {
+        for (self.objects.items, self.object_types.items, 0..) |obj_ptr, obj_type, i| {
             if (obj_type == .RuntimeObject and obj_ptr == @as(*anyopaque, @ptrCast(obj))) {
-                if (mark.*) return; // Already marked
-                mark.* = true;
+                if (self.marks.items[i]) return; // Already marked
+                self.marks.items[i] = true;
                 break;
             }
         }
@@ -447,9 +478,11 @@ pub const GarbageCollector = struct {
 
     // Mark all roots (global environment, VM stack)
     pub fn markRoots(self: *GarbageCollector, env: *Env, stack: ?std.ArrayList(LispVal)) !void {
+        std.debug.print("GC: Marking roots starting from environment at {*}\n", .{env});
         try self.markEnv(env);
 
         if (stack) |s| {
+            std.debug.print("GC: Marking VM stack with {} items\n", .{s.items.len});
             try self.markVMStack(s);
         }
     }

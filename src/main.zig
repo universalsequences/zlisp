@@ -55,16 +55,17 @@ pub fn main() anyerror!void {
         var stack = std.ArrayList(LispVal).init(allocator);
         defer stack.deinit();
 
-        const result = vm.executeInstructions(try instructions.toOwnedSlice(), globalEnv_ptr, allocator) catch |err| {
+        const result = vm.executeInstructions(try instructions.toOwnedSlice(), globalEnv_ptr, allocator, &gc) catch |err| {
             try stdout.print("Execution error: {}\n", .{err});
             continue;
         };
 
         try stdout.print("Result: {!s}\n", .{result.toString(allocator)});
-        try stdout.print("gc.objects: {d}\n", .{gc.objects.items.len});
+        std.debug.print("GC status: {} objects tracked\n", .{gc.objects.items.len});
 
-        // Garbage collection disabled for now
+        // Run garbage collection after each iteration
         if (gc.objects.items.len > 0) {
+            std.debug.print("\nStarting garbage collection process\n", .{});
             try gc.markRoots(globalEnv_ptr, null);
             try gc.collect();
         }
