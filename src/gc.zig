@@ -22,6 +22,8 @@ pub const GarbageCollector = struct {
     threshold: usize,
     // Is collection currently in progress?
     collecting: bool,
+    // Visit tracking map for environment marking
+    visited_envs: ?std.AutoHashMap(*Env, void) = null,
 
     pub fn init(allocator: std.mem.Allocator) GarbageCollector {
         return GarbageCollector{
@@ -31,6 +33,7 @@ pub const GarbageCollector = struct {
             .allocator = allocator,
             .threshold = 1000, // Default threshold
             .collecting = false,
+            .visited_envs = null,
         };
     }
 
@@ -40,6 +43,12 @@ pub const GarbageCollector = struct {
         self.objects.deinit();
         self.object_types.deinit();
         self.marks.deinit();
+        
+        // Clean up the visited environments tracker if it exists
+        if (self.visited_envs != null) {
+            self.visited_envs.?.deinit();
+            self.visited_envs = null;
+        }
     }
 
     fn freeAll(self: *GarbageCollector) void {
@@ -418,8 +427,24 @@ pub const GarbageCollector = struct {
         }
     }
 
+    // Visit tracking map for environment marking
+
     // Mark an Environment and its variables
     fn markEnv(self: *GarbageCollector, env: *Env) !void {
+        // Initialize the visited environments tracker if needed
+        if (self.visited_envs == null) {
+            self.visited_envs = std.AutoHashMap(*Env, void).init(self.allocator);
+        }
+        
+        // Check if this environment has already been visited
+        if (self.visited_envs.?.contains(env)) {
+            std.debug.print("debug: environment @{*} already processed, skipping to prevent recursion\n", .{env});
+            return;
+        }
+        
+        // Mark this environment as visited
+        try self.visited_envs.?.put(env, {});
+        
         // Find and mark the environment
         var found = false;
         for (self.objects.items, self.object_types.items, 0..) |obj, obj_type, i| {
@@ -434,7 +459,7 @@ pub const GarbageCollector = struct {
         // If the environment is not tracked by the GC, we can still mark its contents
         // This can happen for the global environment that was created before GC was set up
         if (!found) {
-            // Just mark its contents, don't try to mark the env itself
+            std.debug.print("debug: environment @{*} not found in GC objects\n", .{env});
         }
 
         // Mark parent environment recursively
@@ -479,8 +504,16 @@ pub const GarbageCollector = struct {
     // Mark all roots (global environment, VM stack)
     pub fn markRoots(self: *GarbageCollector, env: *Env, stack: ?std.ArrayList(LispVal)) !void {
         std.debug.print("GC: Marking roots starting from environment at {*}\n", .{env});
+        
+        // Reset the visited environments tracker for this marking session
+        if (self.visited_envs != null) {
+            self.visited_envs.?.clearRetainingCapacity();
+        }
+        
+        // Mark from environment roots
         try self.markEnv(env);
 
+        // Mark from stack if available
         if (stack) |s| {
             std.debug.print("GC: Marking VM stack with {} items\n", .{s.items.len});
             try self.markVMStack(s);
