@@ -394,6 +394,7 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
                     // appending new pattern to symbol function
                     const closurePtr = try allocator.create(Env);
                     closurePtr.* = Env.init(allocator, current_frame.env);
+                    func.env.deinit();
                     func.env = closurePtr;
                     try func.defs.append(funcDefPtr.*);
 
