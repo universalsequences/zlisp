@@ -1,6 +1,8 @@
 const std = @import("std");
 const vm = @import("vm.zig");
 const builtin = @import("builtin.zig");
+// Forward declare gc.zig to avoid circular dependencies
+pub const gc = @import("gc.zig");
 
 /// Forward-declare Env so we can reference it.
 pub const Env = struct {

@@ -1,12 +1,14 @@
 const std = @import("std");
 const lisp = @import("value.zig");
 const builtin = @import("builtin.zig");
+const gc_mod = @import("gc.zig");
 
 const LispVal = lisp.LispVal;
 const FunctionDef = lisp.FunctionDef;
 const Env = lisp.Env;
 const FnValue = lisp.FnValue;
 const RuntimeObject = lisp.RuntimeObject;
+const GarbageCollector = gc_mod.GarbageCollector;
 
 //// Virtual Machine
 ////
@@ -174,6 +176,12 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
 
     // Main execution loop: continue while there are frames to process
     while (call_stack.items.len > 0) {
+        // GC disabled for now
+        // if (call_stack.items.len % 100 == 0 and gc.objects.items.len > 0) {
+        //     try gc.markRoots(env, stack);
+        //     try gc.collect();
+        // }
+        
         // Get a mutable reference to the current frame (top of the call stack)
         var current_frame = &call_stack.items[call_stack.items.len - 1];
 
@@ -208,8 +216,9 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
             // Push a quoted value (e.g., list or symbol)
             .PushQuote => |quote| {
                 switch (quote) {
-                    .List => |list| {
-                        try stack.append(try builtin.builtin_list(list, allocator));
+                    .List => {
+                        // Create a direct list (since builtin.builtin_list uses GC)
+                        try stack.append(quote);
                     },
                     else => {
                         try stack.append(quote);
@@ -506,6 +515,7 @@ pub fn executeInstructions(instructions: []Instruction, env: *Env, allocator: st
             },
             // Push an empty object
             .PushEmptyObject => {
+                // Create object directly, not using GC for now
                 const obj_ptr = try allocator.create(RuntimeObject);
                 obj_ptr.* = RuntimeObject{
                     .table = std.StringHashMap(LispVal).init(allocator),
